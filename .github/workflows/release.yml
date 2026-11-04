@@ -15,7 +15,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev patchelf rpm
       - run: npm ci
-      - run: npm run tauri -- build --bundles deb,appimage,rpm
+      - name: Build Linux bundles
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run tauri -- build --bundles deb,appimage,rpm 2>&1 | tee build.log || { echo "::error::$(tail -40 build.log | tr '\n' ' ')"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: linux-bundles
@@ -38,7 +42,13 @@ jobs:
         with: { node-version: 22 }
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
-      - run: npm run tauri -- build --no-bundle
+      - name: Build Windows executable
+        shell: pwsh
+        run: |
+          cmd /c "npm run tauri -- build --no-bundle > build.log 2>&1"
+          $code = $LASTEXITCODE
+          Get-Content build.log
+          if ($code -ne 0) { Write-Output "::error::$((Get-Content build.log -Tail 40) -join ' ')"; exit $code }
       # The worker resources must sit alongside the executable for portable use.
       - shell: pwsh
         run: |
