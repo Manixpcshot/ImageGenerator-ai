@@ -24,3 +24,9 @@ Push a version tag (for example `v0.1.0`) to run the release workflow. It create
 The app checks GitHub's latest release at startup and can check again in Settings. A newer version opens the release page for a **manual download and installation**; automatic in-app installation is not implemented. Production auto-installation requires a signed Tauri updater and a securely managed signing key. Bundles are not code-signed by this workflow.
 
 The worker runs locally, and generated images are not uploaded. Hugging Face receives model download requests. Installing third-party models and dependencies is at your own discretion.
+
+## Model catalog and Windows console
+
+The desktop shell is Rust/Tauri; image inference, model downloads, and GPU detection run in a separate local Python worker. On Windows, release builds hide the app console and start the worker without a console window. Python is still required separately.
+
+The Models page fetches the curated `catalog/models.json` from the latest GitHub release and falls back to its bundled catalog when offline or unavailable. Model weights themselves are downloaded from Hugging Face, not GitHub. The catalog is curated rather than a complete search of either service; custom Diffusers-compatible Hugging Face repository IDs can also be entered. Check each model's license, requirements, and recommended settings before use.

@@ -13,7 +13,15 @@ async fn run_worker(app: tauri::AppHandle, action: String, args: Value) -> Resul
     let script = worker_path(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let python = std::env::var("DREAMCANVAS_PYTHON").unwrap_or_else(|_| if cfg!(windows) { "python".into() } else { "python3".into() });
-        let mut child = Command::new(python).arg(script).arg(action).arg(args.to_string()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("Could not start Python: {e}. Install Python and the dependencies described in README."))?;
+        let mut command = Command::new(python);
+        command.arg(script).arg(action).arg(args.to_string()).stdout(Stdio::piped()).stderr(Stdio::null());
+        // Hide the worker console without changing its stdout event stream.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let mut child = command.spawn().map_err(|e| format!("Could not start Python: {e}. Install Python and the dependencies described in README."))?;
         let stdout = child.stdout.take().ok_or("Could not read worker output")?;
         for line in BufReader::new(stdout).lines() {
             if let Ok(line) = line { if let Ok(event) = serde_json::from_str::<Value>(&line) { let _ = app.emit("worker-event", event); } }

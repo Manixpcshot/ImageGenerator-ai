@@ -1,0 +1,6 @@
+[
+  {"id":"Lykon/dreamshaper-8","name":"DreamShaper 8","description":"A fast, versatile SD 1.5 model for imaginative illustrations and portraits.","badge":"Recommended"},
+  {"id":"runwayml/stable-diffusion-v1-5","name":"Stable Diffusion 1.5","description":"A classic general-purpose text-to-image model.","badge":"Classic"},
+  {"id":"stabilityai/sd-turbo","name":"SD Turbo","description":"A distilled model designed for fewer inference steps; try a low guidance value.","badge":"Fast"},
+  {"id":"stabilityai/stable-diffusion-xl-base-1.0","name":"Stable Diffusion XL","description":"A larger model for detailed images; requires more memory and may be slower.","badge":"Detailed"}
+]
