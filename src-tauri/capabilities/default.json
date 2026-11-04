@@ -1,0 +1,1 @@
+{"identifier":"default","description":"Main window permissions","windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-save","opener:allow-open-url","opener:allow-open-path","opener:allow-reveal-item-in-dir"]}

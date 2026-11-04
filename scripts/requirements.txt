@@ -1,0 +1,8 @@
+torch>=2.1
+diffusers>=0.30
+transformers>=4.44
+accelerate>=0.33
+huggingface_hub>=0.25
+safetensors>=0.4
+Pillow>=10
+tqdm>=4.66
