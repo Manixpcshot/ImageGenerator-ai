@@ -40,12 +40,22 @@ fn worker_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             return Ok(bundled);
         }
     }
+    // Portable builds keep worker.py next to the executable.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [dir.join("worker.py"), dir.join("scripts").join("worker.py")] {
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/worker.py");
     if dev.exists() {
         return Ok(dev);
     }
     Err(format!(
-        "worker.py was not found (looked next to the app and at {}). Reinstall DreamCanvas or run it from the repository.",
+        "worker.py was not found next to the app, in its resources, or at {}. Reinstall DreamCanvas or run it from the repository.",
         dev.display()
     ))
 }
