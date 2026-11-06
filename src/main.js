@@ -17,6 +17,7 @@ import {
   CloudDownload,
   Copy,
   Cpu,
+  Database,
   Download,
   ExternalLink,
   Feather,
@@ -28,18 +29,28 @@ import {
   Info,
   Languages,
   Lightbulb,
+  Loader,
   Maximize2,
   Moon,
   Palette,
+  Play,
+  Power,
+  PowerOff,
   RefreshCw,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Sun,
+  Trash2,
   WandSparkles,
   X,
 } from 'lucide';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { open, save } from '@tauri-apps/plugin-dialog';
+import { openPath, openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 
 /** Only the icons this interface uses are bundled; createIcons matches them by PascalCase name. */
 const ICONS = {
@@ -57,6 +68,7 @@ const ICONS = {
   CloudDownload,
   Copy,
   Cpu,
+  Database,
   Download,
   ExternalLink,
   Feather,
@@ -68,30 +80,28 @@ const ICONS = {
   Info,
   Languages,
   Lightbulb,
+  Loader,
   Maximize2,
   Moon,
   Palette,
+  Play,
+  Power,
+  PowerOff,
   RefreshCw,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Sun,
+  Trash2,
   WandSparkles,
   X,
 };
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { open, save } from '@tauri-apps/plugin-dialog';
-import { openPath, openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
-
-/* ------------------------------------------------------------------ *
- * Constants & tiny helpers
- * ------------------------------------------------------------------ */
 
 const VERSION = pkg.version;
 const isTauri = !!window.__TAURI_INTERNALS__;
-const $ = (sel) => document.querySelector(sel);
+const $ = (selector) => document.querySelector(selector);
 
 const read = (key, fallback) => {
   try {
@@ -114,14 +124,12 @@ const esc = (value) =>
 
 const icon = (name, size = 18) => `<i data-lucide="${name}" class="ico" style="width:${size}px;height:${size}px"></i>`;
 
-/** Join a directory and a name using the separator the directory already uses. */
 const joinPath = (dir, name) => {
   const base = String(dir || '').replace(/[\\/]+$/, '');
   const sep = base.includes('\\') ? '\\' : '/';
   return `${base}${sep}${name}`;
 };
 
-/** Hugging Face ids contain slashes; folders use dashes. */
 const folderName = (id) => String(id).replace(/[^a-zA-Z0-9._-]/g, '--');
 
 const formatBytes = (bytes) => {
@@ -140,13 +148,13 @@ const formatDuration = (seconds) => {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 };
 
-const faNum = (value) => (state.lang === 'fa' ? Number(value).toLocaleString('fa-IR') : Number(value).toLocaleString('en-US'));
-
+const faNum = (value) => (state.lang === 'fa' ? Number(value || 0).toLocaleString('fa-IR') : Number(value || 0).toLocaleString('en-US'));
 const clamp = (value, min, max, fallback) => {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, number));
 };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /* ------------------------------------------------------------------ *
  * Translations — the English sentence is the key
@@ -160,7 +168,7 @@ const FA = {
   Workspace: 'فضای کار',
   'Create something wonderful': 'چیزی شگفت‌انگیز خلق کن',
   'Your imagination, made visible.': 'خیالت را به تصویر بکش.',
-  'Compose': 'ساخت تصویر',
+  Compose: 'ساخت تصویر',
   'A clear idea is half the artwork.': 'ایده‌ی روشن، نیمی از اثر هنری است.',
   'The idea': 'ایده',
   Prompt: 'پرامپت',
@@ -176,10 +184,10 @@ const FA = {
   Steps: 'مراحل',
   Guidance: 'هدایت',
   Seed: 'بذر تصادفی',
-  'Random': 'تصادفی',
+  Random: 'تصادفی',
   'Generate image': 'ساخت تصویر',
   'Working…': 'در حال کار…',
-  'Canvas': 'بوم',
+  Canvas: 'بوم',
   'Your canvas awaits': 'بوم تو منتظر است',
   'Write a prompt and press generate — your image appears right here.': 'یک پرامپت بنویس و دکمه‌ی ساخت را بزن؛ تصویر همین‌جا ظاهر می‌شود.',
   'Creating your image': 'تصویر تو در حال خلق شدن است',
@@ -204,10 +212,11 @@ const FA = {
   'Custom Hugging Face model': 'مدل دلخواه Hugging Face',
   'Enter a Diffusers-compatible repository id. Gated models need approval and an HF_TOKEN environment variable.': 'شناسه‌ی یک مخزن سازگار با Diffusers را وارد کن. مدل‌های محدود به تأیید لایسنس و متغیر محیطی HF_TOKEN نیاز دارند.',
   'Download model': 'دانلود مدل',
-  'Downloaded': 'دانلود شده',
-  'Downloading': 'در حال دانلود',
+  Downloaded: 'دانلود شده',
+  Downloading: 'در حال دانلود',
   'Use model': 'انتخاب مدل',
-  'Selected': 'انتخاب شده',
+  Selected: 'انتخاب شده',
+  Use: 'استفاده',
   'Ready to create': 'آماده‌ی ساخت',
   'Storage & folders': 'فضای ذخیره‌سازی و پوشه‌ها',
   'Model download folder': 'پوشه‌ی دانلود مدل‌ها',
@@ -233,15 +242,12 @@ const FA = {
   'Enter a model id like username/model-name.': 'شناسه‌ی مدل را مثل username/model-name وارد کن.',
   'Choose a model folder in Settings first.': 'اول در تنظیمات یک پوشه برای مدل‌ها انتخاب کن.',
   'Connecting to Hugging Face…': 'در حال اتصال به Hugging Face…',
-  'Preparing download…': 'در حال آماده‌سازی دانلود…',
   'Model downloaded and ready': 'مدل دانلود شد و آماده است',
   'Model ready to use': 'مدل آماده‌ی استفاده است',
   'Download failed': 'دانلود ناموفق بود',
+  'Download complete': 'دانلود کامل شد',
   'Write a prompt first.': 'اول یک پرامپت بنویس.',
   'Download the selected model first.': 'اول مدل انتخاب‌شده را دانلود کن.',
-  'Images must be between 1 and 50.': 'تعداد تصاویر باید بین ۱ تا ۵۰ باشد.',
-  'Steps must be between 1 and 150.': 'مراحل باید بین ۱ تا ۱۵۰ باشد.',
-  'Guidance must be between 0 and 30.': 'هدایت باید بین ۰ تا ۳۰ باشد.',
   'Starting generation…': 'شروع ساخت…',
   'Generation complete': 'ساخت کامل شد',
   'Generation failed': 'ساخت تصویر ناموفق بود',
@@ -254,7 +260,6 @@ const FA = {
   'Catalog updated from GitHub.': 'فهرست از گیت‌هاب به‌روز شد.',
   'Bundled catalogue · offline mode': 'فهرست همراه برنامه · حالت آفلاین',
   'Loading model catalogue…': 'در حال بارگذاری فهرست مدل‌ها…',
-  'No published release found': 'هیچ نسخه‌ی منتشرشده‌ای پیدا نشد',
   'You are up to date.': 'برنامه به‌روز است.',
   'Could not check releases.': 'بررسی نسخه‌ها ممکن نشد.',
   'Detecting hardware…': 'در حال شناسایی سخت‌افزار…',
@@ -267,43 +272,88 @@ const FA = {
   'Prompts and images never leave your machine.': 'پرامپت‌ها و تصاویر از دستگاه تو خارج نمی‌شوند.',
   'Browser preview — model downloads and generation need the desktop app.': 'پیش‌نمایش مرورگر — دانلود مدل و ساخت تصویر به نسخه‌ی دسکتاپ نیاز دارد.',
   'Behind the scenes': 'پشت صحنه',
-  'Files ready': 'فایل‌های آماده',
   'No model selected': 'مدلی انتخاب نشده',
   'Current image': 'تصویر جاری',
-  'Bundled': 'همراه برنامه',
+  Bundled: 'همراه برنامه',
   'Approx. size': 'حجم تقریبی',
-  'installed': 'نصب‌شده',
-  'images': 'تصویر',
-  'steps': 'مرحله',
-  'Back': 'بازگشت',
-  'Close': 'بستن',
-  'Next': 'بعدی',
-  'Previous': 'قبلی',
+  installed: 'نصب‌شده',
+  images: 'تصویر',
+  files: 'فایل',
+  steps: 'مرحله',
+  Back: 'بازگشت',
+  Close: 'بستن',
+  Next: 'بعدی',
+  Previous: 'قبلی',
   'Save image': 'ذخیره‌ی تصویر',
   'Copy prompt': 'کپی پرامپت',
-  'Original prompt': 'پرامپت اصلی',
   'Open in Hugging Face': 'باز کردن در Hugging Face',
-  'Custom': 'دلخواه',
-  'Recommended': 'پیشنهادی',
-  'Fast': 'سریع',
-  'Detailed': 'پرجزئیات',
-  'Classic': 'کلاسیک',
-  'Built for imagination': 'ساخته‌شده برای خیال',
-  'Every big idea starts with a small spark.': 'هر ایده‌ی بزرگ با یک جرقه‌ی کوچک شروع می‌شود.',
+  Custom: 'دلخواه',
+  Recommended: 'پیشنهادی',
+  Fast: 'سریع',
+  Detailed: 'پرجزئیات',
+  Classic: 'کلاسیک',
   'Enter a model id first.': 'اول شناسه‌ی مدل را وارد کن.',
   'Model settings': 'تنظیمات مدل',
-  'Quality': 'کیفیت',
-  'Hardware': 'سخت‌افزار',
+  Quality: 'کیفیت',
+  Hardware: 'سخت‌افزار',
   'Where your files live': 'محل نگهداری فایل‌ها',
-  'Models and images stay on this computer.': 'مدل‌ها و تصاویر روی همین کامپیوتر می‌مانند.',
   'Switch look and language.': 'ظاهر و زبان را تغییر بده.',
   'Runs inference locally with Python and Diffusers.': 'استنتاج را به‌صورت محلی با پایتون و Diffusers اجرا می‌کند.',
   'Install the worker dependencies once:': 'یک‌بار وابستگی‌های سرویس را نصب کن:',
-  'Version': 'نسخه',
-  'Refresh': 'تازه‌سازی',
-  'All': 'همه',
+  Version: 'نسخه',
+  Refresh: 'تازه‌سازی',
   'Show in folder': 'نمایش در پوشه',
-  'New': 'جدید',
+  'Installed models': 'مدل‌های نصب‌شده',
+  'Download models': 'دانلود مدل',
+  'No models yet': 'هنوز مدلی نداری',
+  'Download a model to start creating.': 'برای شروع، یک مدل دانلود کن.',
+  Loaded: 'بارگذاری‌شده',
+  Load: 'بارگذاری',
+  Unload: 'خروج از حافظه',
+  'Load model': 'بارگذاری مدل',
+  'Unload model': 'خروج مدل از حافظه',
+  'Model loaded': 'مدل بارگذاری شد',
+  'Model unloaded': 'مدل از حافظه خارج شد',
+  'Loading model…': 'در حال بارگذاری مدل…',
+  'Loads automatically': 'به‌صورت خودکار بارگذاری می‌شود',
+  Ready: 'آماده',
+  'Not ready': 'ناقص',
+  Delete: 'حذف',
+  'Delete model?': 'مدل حذف شود؟',
+  'This deletes the downloaded files from disk.': 'فایل‌های دانلودشده از دیسک پاک می‌شوند.',
+  'Model deleted': 'مدل حذف شد',
+  Cancel: 'لغو',
+  Stop: 'توقف',
+  'Cancelling…': 'در حال توقف…',
+  'Cancelled': 'لغو شد',
+  Worker: 'سرویس',
+  'Restart worker': 'راه‌اندازی دوباره‌ی سرویس',
+  'Environment check': 'بررسی محیط',
+  'Run check': 'اجرای بررسی',
+  'Free space': 'فضای آزاد',
+  'Total size': 'حجم کل',
+  'The Python worker did not answer.': 'سرویس پایتون پاسخ نداد.',
+  'Worker stopped unexpectedly.': 'سرویس به‌طور غیرمنتظره متوقف شد.',
+  'Download folder': 'پوشه‌ی دانلود',
+  'Model manager': 'مدیریت مدل‌ها',
+  'Manage what is on disk, then load one to generate.': 'مدل‌های روی دیسک را مدیریت کن و برای ساخت، یکی را بارگذاری کن.',
+  'No models on disk yet': 'هنوز مدلی روی دیسک نیست',
+  'Progress': 'پیشرفت',
+  'Waiting for the worker…': 'در انتظار سرویس…',
+  'Starting the Python worker…': 'در حال راه‌اندازی سرویس پایتون…',
+  'Device': 'دستگاه',
+  'Reload to apply the new device.': 'برای اعمال دستگاه جدید، مدل را دوباره بارگذاری کن.',
+  'Model files are missing.': 'فایل‌های مدل ناقص است.',
+  'Delete files': 'حذف فایل‌ها',
+  'Generate with this model': 'ساخت با این مدل',
+  'Storage': 'فضای ذخیره‌سازی',
+  'Loaded model': 'مدل بارگذاری‌شده',
+  'No model is loaded. Generation loads one automatically.': 'هیچ مدلی بارگذاری نشده؛ هنگام ساخت به‌صورت خودکار بارگذاری می‌شود.',
+  'System': 'سیستم',
+  'Optional': 'اختیاری',
+  'Python': 'پایتون',
+  'PyTorch': 'PyTorch',
+  'Network': 'شبکه',
 };
 
 const t = (phrase) => (state.lang === 'fa' ? FA[phrase] || phrase : phrase);
@@ -356,25 +406,37 @@ const state = {
   modelsDir: read('dc.modelsDir', ''),
   output: read('dc.output', ''),
   hardware: 'Detecting hardware…',
-  installed: read('dc.downloaded', {}),
+  models: [],
   catalog: bundledCatalog,
   catalogStatus: '',
   images: [],
   meta: read('dc.meta', {}),
-  job: null,
-  downloading: null,
-  status: 'Ready to create',
-  progress: 0,
-  jobStartedAt: 0,
-  elapsed: 0,
-  workerErrorAt: 0,
-  update: '',
+  workerReady: false,
+  workerStarting: false,
+  workerInfo: null,
+  workerError: '',
   pythonError: '',
+  loaded: null,
+  task: null,
+  progress: 0,
+  status: '',
+  startedAt: 0,
+  elapsed: 0,
+  diagnostics: null,
+  update: '',
   lightbox: -1,
+  pendingUnload: null,
+  confirmResolve: null,
 };
 
+const installedIds = () => new Set(state.models.map((model) => model.id));
+const isInstalled = (id) => installedIds().has(id);
+const modelById = (id) => state.models.find((model) => model.id === id);
+const modelPath = (id) => joinPath(state.modelsDir, folderName(id));
+const jobKind = () => state.task?.kind || null;
+
 /* ------------------------------------------------------------------ *
- * Toast + overlays
+ * Toasts, dialogs, lightbox
  * ------------------------------------------------------------------ */
 
 function showToast(message, kind = 'ok') {
@@ -395,12 +457,50 @@ function showToast(message, kind = 'ok') {
   setTimeout(() => {
     el.classList.remove('toast-in');
     setTimeout(() => el.remove(), 320);
-  }, 4200);
+  }, 4600);
+}
+
+function confirmDialog({ title, body, confirmLabel }) {
+  return new Promise((resolve) => {
+    closeDialog();
+    const el = document.createElement('div');
+    el.id = 'confirm';
+    el.className = 'modal';
+    el.innerHTML = `
+      <div class="modal-backdrop" data-confirm="no"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true">
+        <span class="modal-icon">${icon('circle-alert', 20)}</span>
+        <h3>${esc(title)}</h3>
+        <p>${esc(body)}</p>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-confirm="no">${t('Cancel')}</button>
+          <button class="btn btn-danger" data-confirm="yes">${esc(confirmLabel || t('Delete'))}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(el);
+    createIcons({ icons: ICONS });
+    state.confirmResolve = resolve;
+    el.addEventListener('click', (event) => {
+      const answer = event.target.closest('[data-confirm]')?.dataset.confirm;
+      if (!answer) return;
+      resolve(answer === 'yes');
+      state.confirmResolve = null;
+      el.remove();
+    });
+    requestAnimationFrame(() => el.classList.add('open'));
+  });
+}
+
+function closeDialog() {
+  if (state.confirmResolve) {
+    state.confirmResolve(false);
+    state.confirmResolve = null;
+  }
+  document.getElementById('confirm')?.remove();
 }
 
 function closeLightbox() {
-  const el = document.getElementById('lightbox');
-  if (el) el.remove();
+  document.getElementById('lightbox')?.remove();
   state.lightbox = -1;
   document.body.classList.remove('no-scroll');
 }
@@ -454,6 +554,60 @@ function stepLightbox(direction) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Worker bridge
+ * ------------------------------------------------------------------ */
+
+async function startWorker({ quiet = false } = {}) {
+  if (!isTauri) return false;
+  state.workerStarting = true;
+  state.workerError = '';
+  if (!quiet) render();
+  try {
+    await invoke('worker_start');
+  } catch (error) {
+    state.workerError = String(error || '');
+    state.pythonError = state.workerError;
+    state.workerStarting = false;
+    state.workerReady = false;
+    showToast(state.workerError, 'err');
+    render();
+    return false;
+  }
+  const deadline = Date.now() + 12000;
+  while (!state.workerReady && Date.now() < deadline) await sleep(120);
+  state.workerStarting = false;
+  if (!state.workerReady) {
+    state.workerError = t('The Python worker did not answer.');
+    state.pythonError = state.workerError;
+    showToast(state.workerError, 'err');
+    render();
+    return false;
+  }
+  render();
+  return true;
+}
+
+async function sendWorker(action, args = {}) {
+  if (!isTauri) {
+    showToast(t('This action runs in the desktop app.'), 'warn');
+    return false;
+  }
+  if (!state.workerReady) {
+    const ok = await startWorker({ quiet: true });
+    if (!ok) return false;
+  }
+  try {
+    await invoke('worker_send', { action, args });
+    return true;
+  } catch (error) {
+    state.pythonError = String(error || '');
+    showToast(state.pythonError, 'err');
+    render();
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
 
@@ -461,7 +615,7 @@ const iconBtn = (action, glyph, label, extra = '') =>
   `<button class="icon-btn ${extra}" data-action="${action}" title="${esc(label)}" aria-label="${esc(label)}">${icon(glyph, 16)}</button>`;
 
 function statusLabel() {
-  return state.status || t('Ready to create');
+  return state.status || (state.workerReady ? t('Ready to create') : t('Waiting for the worker…'));
 }
 
 function sidebar() {
@@ -483,7 +637,7 @@ function sidebar() {
         <nav class="side-nav">
           ${PAGES.filter((page) => page.group === group.key)
             .map((page) => {
-              const badge = page.id === 'gallery' ? state.images.length : page.id === 'models' ? Object.keys(state.installed).length : 0;
+              const badge = page.id === 'gallery' ? state.images.length : page.id === 'models' ? state.models.length : 0;
               return `<button class="nav ${state.page === page.id ? 'active' : ''}" data-page="${page.id}">
                 <span class="nav-icon">${icon(page.icon, 18)}</span>
                 <span class="nav-label">${esc(t(page.label))}</span>
@@ -503,7 +657,7 @@ function sidebar() {
     <div class="side-footer">
       <span class="avatar">D</span>
       <span class="side-user"><strong>DreamCanvas</strong><small>v${esc(VERSION)}</small></span>
-      <span class="side-online" title="${esc(state.hardware)}"><i></i></span>
+      <span class="side-online ${state.workerReady ? '' : 'off'}" title="${esc(statusLabel())}"><i></i></span>
     </div>
   </aside>`;
 }
@@ -517,7 +671,12 @@ function topbar() {
       <b>${esc(t(PAGES.find((page) => page.id === state.page)?.label || 'Studio'))}</b>
     </div>
     <div class="top-actions">
-      ${state.job ? `<span class="job-pill"><i class="spin-dot"></i>${esc(state.job === 'download' ? t('Downloading') : t('Working…'))}<b>${Math.round(state.progress)}%</b></span>` : ''}
+      ${
+        state.task
+          ? `<span class="job-pill"><i class="spin-dot"></i>${esc(taskLabel())}<b>${Math.round(state.progress)}%</b></span>`
+          : ''
+      }
+      ${state.loaded ? `<span class="loaded-pill" title="${esc(state.loaded.model)}">${icon('power', 13)}<span>${esc(state.loaded.model.split('/').pop())}</span></span>` : ''}
       <span class="hardware-pill" title="${esc(t('Hardware'))}">${icon('cpu', 14)}<span>${esc(state.hardware)}</span></span>
       <button class="icon-btn" data-action="translate" title="${esc(t('Translate prompt'))}" aria-label="${esc(t('Translate prompt'))}">${icon('languages', 17)}</button>
       <button class="icon-btn" data-action="theme" title="${esc(t('Theme'))}" aria-label="${esc(t('Theme'))}">${icon(state.theme === 'dark' ? 'sun' : 'moon', 17)}</button>
@@ -527,37 +686,38 @@ function topbar() {
 }
 
 function statsStrip() {
+  const totalSize = state.models.reduce((sum, model) => sum + (Number(model.size) || 0), 0);
   return `
     <div class="stats">
       <div class="stat"><span>${icon('images', 14)}</span><strong>${faNum(state.images.length)}</strong><small>${t('images')}</small></div>
-      <div class="stat"><span>${icon('boxes', 14)}</span><strong>${faNum(Object.keys(state.installed).length)}</strong><small>${t('Downloaded')}</small></div>
-      <div class="stat"><span>${icon('gauge', 14)}</span><strong>${state.job ? `${Math.round(state.progress)}%` : esc(deviceLabel())}</strong><small>${t('Compute device')}</small></div>
+      <div class="stat"><span>${icon('boxes', 14)}</span><strong>${faNum(state.models.length)}</strong><small>${t('Models')}</small></div>
+      <div class="stat"><span>${icon('hard-drive', 14)}</span><strong>${formatBytes(totalSize)}</strong><small>${t('Total size')}</small></div>
     </div>`;
 }
 
-function deviceLabel() {
-  const map = { auto: 'AUTO', cpu: 'CPU', cuda: 'CUDA', mps: 'MPS' };
-  return map[state.device] || 'AUTO';
+function taskLabel() {
+  if (!state.task) return '';
+  if (state.task.kind === 'download') return t('Downloading');
+  if (state.task.kind === 'load') return t('Loading model…');
+  return t('Working…');
 }
 
-function modelOptions() {
-  const catalog = [...state.catalog];
-  if (state.model && !catalog.some((m) => m.id === state.model)) {
-    catalog.unshift({ id: state.model, name: state.model, description: '', badge: '' });
-  }
-  return catalog
-    .map(
-      (m) =>
-        `<option value="${esc(m.id)}"${m.id === state.model ? ' selected' : ''}>${esc(m.name)}${state.installed[m.id] ? ' ✓' : ''}</option>`
-    )
+function modelSelectOptions() {
+  if (!state.models.length) return `<option value="">${t('No models yet')}</option>`;
+  return state.models
+    .map((model) => `<option value="${esc(model.id)}"${model.id === state.model ? ' selected' : ''}>${esc(model.id)}${state.loaded?.model === model.id ? ` — ${t('Loaded')}` : ''}</option>`)
     .join('');
 }
 
 function studio() {
-  const busy = state.job === 'generate';
-  const downloading = state.job === 'download';
+  const current = modelById(state.model);
+  const loadedHere = state.loaded && state.loaded.model === state.model;
+  const busy = !!state.task;
+  const generating = state.task?.kind === 'generate';
+  const loading = state.task?.kind === 'load' || (generating && state.task?.phase === 'load');
   const latest = state.images[0];
   const latestMeta = latest ? state.meta[latest.name] || {} : {};
+
   return `
   <div class="page">
     <section class="page-head">
@@ -573,10 +733,7 @@ function studio() {
       <section class="card composer">
         <div class="card-head">
           <span class="card-icon">${icon('wand-sparkles', 18)}</span>
-          <div class="card-titles">
-            <h2>${t('Compose')}</h2>
-            <p>${t('Your imagination, made visible.')}</p>
-          </div>
+          <div class="card-titles"><h2>${t('Compose')}</h2><p>${t('Your imagination, made visible.')}</p></div>
           <span class="tag">${icon('shield-check', 12)} ${t('Local & private')}</span>
         </div>
 
@@ -614,14 +771,33 @@ function studio() {
           <span>${t('Quality')}</span>
         </div>
 
-        <div class="field-grid">
-          <div class="field">
-            <label for="model">${t('Model')}</label>
-            <div class="select-shell"><select id="model">${modelOptions()}</select>${icon('chevron-down', 14)}</div>
-            <small class="field-note ${state.installed[state.model] ? 'ok' : 'warn'}">
-              ${state.installed[state.model] ? `● ${t('Downloaded')}` : `○ ${t('Download the selected model first.')}`}
-            </small>
+        <div class="field">
+          <label for="model">${t('Model')}</label>
+          ${
+            state.models.length
+              ? `<div class="model-row">
+                  <div class="select-shell"><select id="model">${modelSelectOptions()}</select>${icon('chevron-down', 14)}</div>
+                  ${
+                    loadedHere
+                      ? `<button class="btn btn-ghost" data-action="unload-model">${icon('power-off', 14)} ${t('Unload')}</button>`
+                      : `<button class="btn btn-ghost" data-action="load-model:${esc(state.model)}" ${busy ? 'disabled' : ''}>${icon('power', 14)} ${t('Load')}</button>`
+                  }
+                </div>`
+              : `<button class="btn btn-primary" data-page="models">${icon('cloud-download', 15)} ${t('Download a model to start creating.')}</button>`
+          }
+          <div class="model-state">
+            ${
+              loadedHere
+                ? `<span class="state-chip ok">${icon('check', 12)} ${t('Loaded')} · ${esc(String(state.loaded.device).toUpperCase())}${state.loaded.dtype ? ` · ${esc(state.loaded.dtype)}` : ''}</span>`
+                : current
+                  ? `<span class="state-chip">${icon('power', 12)} ${t('Loads automatically')}</span>`
+                  : `<span class="state-chip warn">${icon('circle-alert', 12)} ${t('No models yet')}</span>`
+            }
+            ${state.workerReady ? '' : `<span class="state-chip warn">${icon('loader', 12)} ${t('Waiting for the worker…')}</span>`}
           </div>
+        </div>
+
+        <div class="field-grid three">
           <div class="field">
             <label for="size">${t('Size')}</label>
             <div class="select-shell"><select id="size">
@@ -664,24 +840,27 @@ function studio() {
             : ''
         }
 
-        <button class="generate ${busy ? 'is-busy' : ''}" data-action="generate" ${state.job ? 'disabled' : ''}>
-          <span class="generate-glow"></span>
-          ${busy ? `<i class="spinner"></i> ${t('Working…')}` : `${icon('sparkles', 18)} ${t('Generate image')}`}
-          <span class="generate-key">⌘↵</span>
-        </button>
+        <div class="generate-row">
+          <button class="generate ${generating ? 'is-busy' : ''}" data-action="generate" ${busy ? 'disabled' : ''}>
+            <span class="generate-glow"></span>
+            ${generating ? `<i class="spinner"></i> ${t('Working…')}` : `${icon('sparkles', 18)} ${t('Generate image')}`}
+            <span class="generate-key">⌘↵</span>
+          </button>
+          ${busy ? `<button class="stop-btn" data-action="cancel">${icon('square', 15)} ${t('Stop')}</button>` : ''}
+        </div>
 
         <div class="job-line" aria-live="polite">
-          <span class="dot ${state.job ? 'busy' : ''}"></span>
+          <span class="dot ${state.task ? 'busy' : ''}"></span>
           <span class="job-text" data-live-status>${esc(statusLabel())}</span>
-          ${state.job ? `<span class="job-meta"><b data-live-percent>${Math.round(state.progress)}%</b><span data-live-elapsed>${formatDuration(state.elapsed)}</span></span>` : ''}
+          ${state.task ? `<span class="job-meta"><b data-live-percent>${Math.round(state.progress)}%</b><span data-live-elapsed>${formatDuration(state.elapsed)}</span></span>` : ''}
         </div>
         ${
-          state.job
+          state.task
             ? `<div class="progress"><span data-live-progress style="width:${Math.min(100, Math.max(0, state.progress))}%"></span></div>
-               <p class="job-detail" data-live-detail>${esc(downloadDetail())}</p>`
+               <p class="job-detail" data-live-detail>${esc(taskDetail())}</p>`
             : ''
         }
-        ${state.pythonError ? `<div class="alert">${icon('circle-alert', 15)}<div><strong>${t('Python worker')}</strong><p>${esc(state.pythonError)}</p><button class="link-btn" data-action="copy-command">${icon('copy', 13)} ${t('Copy command')}</button></div></div>` : ''}
+        ${pythonAlert()}
       </section>
 
       <section class="preview-stack">
@@ -695,15 +874,16 @@ function studio() {
             </div>
           </div>
 
-          <div class="canvas ${busy ? 'busy' : ''} ${latest ? 'filled' : ''}">
+          <div class="canvas ${busy ? 'busy' : ''} ${latest && !busy ? 'filled' : ''}">
             ${
               busy
                 ? `<div class="creating">
-                    <div class="orb"><span class="halo"></span><span class="halo"></span><span class="halo"></span>${icon('sparkles', 26)}</div>
-                    <h3>${t('Creating your image')}</h3>
-                    <p>${t('Local model is painting with light…')}</p>
+                    <div class="orb ${loading ? 'loading' : ''}"><span class="halo"></span><span class="halo"></span><span class="halo"></span>${icon(loading ? 'loader' : 'sparkles', 26)}</div>
+                    <h3>${loading ? t('Loading model…') : t('Creating your image')}</h3>
+                    <p>${loading ? esc(state.status || t('Starting the Python worker…')) : t('Local model is painting with light…')}</p>
                     <div class="creating-meta"><span data-live-status2>${esc(statusLabel())}</span><b data-live-percent2>${Math.round(state.progress)}%</b></div>
                     <div class="progress slim"><span data-live-progress2 style="width:${Math.min(100, Math.max(0, state.progress))}%"></span></div>
+                    <button class="link-btn" data-action="cancel">${icon('square', 12)} ${t('Stop')}</button>
                   </div>`
                 : latest
                   ? `<img class="canvas-image" src="${latest.url}" alt="${esc(latestMeta.prompt || latest.name)}" />
@@ -722,7 +902,11 @@ function studio() {
                       <button class="chip accent" data-action="surprise">${icon('sparkles', 13)} ${t('Surprise me')}</button>
                     </div>`
             }
-            ${downloading ? `<div class="download-badge">${icon('cloud-download', 15)} <span>${esc(state.downloading?.id || '')}</span><b data-live-percent3>${Math.round(state.progress)}%</b></div>` : ''}
+            ${
+              state.task?.kind === 'download'
+                ? `<div class="download-badge">${icon('cloud-download', 15)}<span>${esc(state.task?.model || '')}</span><b data-live-percent3>${Math.round(state.progress)}%</b></div>`
+                : ''
+            }
           </div>
 
           ${
@@ -737,9 +921,7 @@ function studio() {
                     <button class="icon-btn" data-action="copy-prompt" title="${esc(t('Copy prompt'))}">${icon('copy', 16)}</button>
                   </div>
                 </div>`
-              : `<div class="canvas-foot">
-                  <span>${icon('hard-drive', 13)} ${t('Images are saved automatically to your output folder.')}</span>
-                </div>`
+              : `<div class="canvas-foot"><span>${icon('hard-drive', 13)} ${t('Images are saved automatically to your output folder.')}</span></div>`
           }
         </div>
 
@@ -757,6 +939,15 @@ function studio() {
 
     ${recentStrip()}
   </div>`;
+}
+
+function pythonAlert() {
+  if (!state.pythonError) return '';
+  return `<div class="alert">${icon('circle-alert', 15)}<div><strong>${t('Python worker')}</strong><p>${esc(state.pythonError)}</p>
+    <div class="alert-actions">
+      <button class="link-btn" data-action="restart-worker">${icon('refresh-cw', 13)} ${t('Restart worker')}</button>
+      <button class="link-btn" data-action="copy-command">${icon('copy', 13)} ${t('Copy command')}</button>
+    </div></div></div>`;
 }
 
 function recentStrip() {
@@ -806,9 +997,7 @@ function gallery() {
               return `<article class="shot">
                 <button class="shot-image" data-action="lightbox:${i}" aria-label="${esc(t('View large'))}">
                   <img src="${image.url}" alt="${esc(meta.prompt || image.name)}" loading="lazy" />
-                  <span class="shot-veil">
-                    <span class="shot-btn">${icon('maximize-2', 16)}</span>
-                  </span>
+                  <span class="shot-veil"><span class="shot-btn">${icon('maximize-2', 16)}</span></span>
                 </button>
                 <div class="shot-body">
                   <p title="${esc(meta.prompt || image.name)}">${esc(meta.prompt || image.name)}</p>
@@ -833,10 +1022,51 @@ function gallery() {
   </div>`;
 }
 
-function modelCard(model, index, busy) {
-  const installed = !!state.installed[model.id];
+/* ---------------------------------------------------------------------- *
+ * Models view — install, load, unload, delete
+ * ---------------------------------------------------------------------- */
+
+function installedCard(model) {
+  const loadedHere = state.loaded?.model === model.id;
+  const busy = !!state.task;
   const active = state.model === model.id;
-  const downloading = state.downloading?.id === model.id;
+  return `
+  <article class="model-card installed ${loadedHere ? 'loaded' : ''} ${active ? 'active' : ''}">
+    <div class="model-art art-${(model.id.length + model.id.charCodeAt(0)) % 4}"><span>${loadedHere ? '●' : '✦'}</span></div>
+    <div class="model-body">
+      <div class="model-name">
+        <h3>${esc(model.id.split('/').pop())}</h3>
+        ${loadedHere ? `<span class="badge ok">${icon('power', 11)} ${t('Loaded')}</span>` : model.ready ? `<span class="badge">${t('Ready')}</span>` : `<span class="badge warn">${t('Not ready')}</span>`}
+        ${active ? `<span class="badge">${t('Selected')}</span>` : ''}
+      </div>
+      <p class="mono" title="${esc(model.id)}">${esc(model.id)}</p>
+      <div class="model-meta">
+        <span>${icon('hard-drive', 13)} ${formatBytes(model.size)}</span>
+        <span>${icon('boxes', 13)} ${faNum(model.files)} ${t('files')}</span>
+        ${loadedHere ? `<span>${icon('cpu', 13)} ${esc(String(state.loaded.device).toUpperCase())}${state.loaded.vram ? ` · ${formatBytes(state.loaded.vram * 1024 * 1024)} VRAM` : ''}</span>` : ''}
+      </div>
+      ${!model.ready ? `<p class="card-warning">${icon('circle-alert', 12)} ${t('Model files are missing.')}</p>` : ''}
+    </div>
+    <div class="model-actions">
+      ${
+        loadedHere
+          ? `<button class="btn btn-flat" data-action="unload-model" ${busy ? 'disabled' : ''}>${icon('power-off', 14)} ${t('Unload')}</button>`
+          : `<button class="btn btn-primary" data-action="load-model:${esc(model.id)}" ${busy || !model.ready ? 'disabled' : ''}>${icon('power', 14)} ${t('Load')}</button>`
+      }
+      <div class="model-icon-row">
+        <button class="icon-btn sm" data-action="use-model:${esc(model.id)}" title="${esc(t('Use model'))}">${icon('check', 14)}</button>
+        <button class="icon-btn sm" data-action="open-model:${esc(model.id)}" title="${esc(t('Show in folder'))}">${icon('folder-open', 14)}</button>
+        <button class="icon-btn sm danger" data-action="delete-model:${esc(model.id)}" title="${esc(t('Delete'))}">${icon('trash-2', 14)}</button>
+      </div>
+    </div>
+  </article>`;
+}
+
+function catalogCard(model, index) {
+  const installed = isInstalled(model.id);
+  const loadedHere = state.loaded?.model === model.id;
+  const downloading = state.task?.kind === 'download' && state.task.model === model.id;
+  const active = state.model === model.id;
   return `
   <article class="model-card ${installed ? 'installed' : ''} ${active ? 'active' : ''}">
     <div class="model-art art-${index % 4}"><span>${index === 0 ? '✦' : '✧'}</span></div>
@@ -845,11 +1075,12 @@ function modelCard(model, index, busy) {
         <h3>${esc(model.name)}</h3>
         ${model.badge ? `<span class="badge">${esc(t(model.badge))}</span>` : ''}
         ${installed ? `<span class="badge ok">${icon('check', 11)} ${t('Downloaded')}</span>` : ''}
+        ${loadedHere ? `<span class="badge ok">${icon('power', 11)} ${t('Loaded')}</span>` : ''}
       </div>
       <p>${esc(model.description)}</p>
       <div class="model-meta">
-        <span>${icon('boxes', 13)} ${esc(model.id)}</span>
-        ${model.size ? `<span>${icon('hard-drive', 13)} ${esc(t('Approx. size'))}: ${esc(model.size)}</span>` : ''}
+        <span class="mono">${icon('boxes', 13)} ${esc(model.id)}</span>
+        ${model.size ? `<span>${icon('hard-drive', 13)} ${esc(model.size)}</span>` : ''}
       </div>
     </div>
     <div class="model-actions">
@@ -857,11 +1088,12 @@ function modelCard(model, index, busy) {
         downloading
           ? `<div class="mini-progress">
               <div class="progress slim"><span data-live-progress4 style="width:${Math.min(100, Math.max(0, state.progress))}%"></span></div>
-              <span><b data-live-percent4>${Math.round(state.progress)}%</b> · ${esc(downloadSpeed())}</span>
+              <span><b data-live-percent4>${Math.round(state.progress)}%</b> · ${esc(taskSpeed())}</span>
+              <button class="link-btn" data-action="cancel">${t('Stop')}</button>
             </div>`
           : installed
-            ? `<button class="btn ${active ? 'btn-flat' : 'btn-ghost'}" data-action="use-model:${esc(model.id)}" ${active ? 'disabled' : ''}>${active ? `${icon('check', 14)} ${t('Selected')}` : t('Use model')}</button>`
-            : `<button class="btn btn-primary" data-action="download-model:${esc(model.id)}" ${busy ? 'disabled' : ''}>${icon('download', 15)} ${t('Download model')}</button>`
+            ? `<button class="btn btn-ghost" data-action="use-model:${esc(model.id)}">${icon('check', 14)} ${active ? t('Selected') : t('Use')}</button>`
+            : `<button class="btn btn-primary" data-action="download-model:${esc(model.id)}" ${state.task ? 'disabled' : ''}>${icon('download', 15)} ${t('Download model')}</button>`
       }
       <button class="icon-btn sm" data-action="open-hf:${esc(model.id)}" title="${esc(t('Open in Hugging Face'))}">${icon('external-link', 14)}</button>
     </div>
@@ -869,30 +1101,68 @@ function modelCard(model, index, busy) {
 }
 
 function models() {
-  const busy = !!state.job;
+  const totalSize = state.models.reduce((sum, model) => sum + (Number(model.size) || 0), 0);
+  const free = state.diagnostics?.free_space;
   return `
   <div class="page">
     <section class="page-head">
       <div>
-        <p class="eyebrow">${icon('boxes', 13)} ${t('Model catalogue')}</p>
+        <p class="eyebrow">${icon('boxes', 13)} ${t('Model manager')}</p>
         <h1>${t('Model library')}</h1>
-        <p class="page-sub">${esc(state.catalogStatus || t('Models download from Hugging Face straight to your computer.'))}</p>
+        <p class="page-sub">${t('Manage what is on disk, then load one to generate.')}</p>
       </div>
       <div class="head-tools">
-        <button class="btn btn-ghost" data-action="refresh-catalog">${icon('refresh-cw', 15)} ${t('Refresh catalogue')}</button>
+        <button class="btn btn-ghost" data-action="refresh-models">${icon('refresh-cw', 15)} ${t('Refresh')}</button>
+        <button class="btn btn-ghost" data-action="refresh-catalog">${icon('cloud-download', 15)} ${t('Refresh catalogue')}</button>
       </div>
     </section>
 
-    <div class="notice">
-      <span class="notice-icon">${icon('cloud-download', 17)}</span>
-      <div>
-        <strong>${t('Models download from Hugging Face straight to your computer.')}</strong>
-        <p>${esc(state.modelsDir || t('Choose folder'))}</p>
+    <section class="storage-bar">
+      <div class="storage-item">
+        <span class="storage-icon">${icon('hard-drive', 17)}</span>
+        <div><small>${t('Download folder')}</small><strong class="mono" title="${esc(state.modelsDir)}">${esc(state.modelsDir || '—')}</strong></div>
       </div>
-      <button class="btn btn-ghost" data-action="choose-models">${t('Choose folder')}</button>
-    </div>
+      <div class="storage-stats">
+        <span>${icon('boxes', 13)} ${faNum(state.models.length)} ${t('Models')}</span>
+        <span>${icon('database', 13)} ${formatBytes(totalSize)}</span>
+        ${free ? `<span>${icon('gauge', 13)} ${t('Free space')}: ${formatBytes(free)}</span>` : ''}
+      </div>
+      <div class="storage-actions">
+        <button class="btn btn-ghost" data-action="choose-models">${icon('folder-open', 14)} ${t('Choose folder')}</button>
+      </div>
+    </section>
 
-    <div class="model-grid">${state.catalog.map((model, i) => modelCard(model, i, busy)).join('')}</div>
+    <section class="card loaded-banner ${state.loaded ? 'on' : ''}">
+      <span class="loaded-icon">${icon(state.loaded ? 'power' : 'power-off', 18)}</span>
+      <div>
+        <strong>${state.loaded ? esc(state.loaded.model) : t('No model is loaded. Generation loads one automatically.')}</strong>
+        <p>${
+          state.loaded
+            ? `${String(state.loaded.device).toUpperCase()}${state.loaded.dtype ? ` · ${esc(state.loaded.dtype)}` : ''}${state.loaded.vram ? ` · ${formatBytes(state.loaded.vram * 1024 * 1024)} VRAM` : ''}${state.loaded.seconds ? ` · ${state.loaded.seconds}s` : ''}`
+            : esc(statusLabel())
+        }</p>
+      </div>
+      ${state.loaded ? `<button class="btn btn-ghost" data-action="unload-model" ${state.task ? 'disabled' : ''}>${icon('power-off', 15)} ${t('Unload')}</button>` : ''}
+    </section>
+
+    <div class="section-header">
+      <h2>${icon('boxes', 16)} ${t('Installed models')} <span>${faNum(state.models.length)}</span></h2>
+      <p>${t('Files live on your computer. Load one to keep it in memory.')}</p>
+    </div>
+    ${
+      state.models.length
+        ? `<div class="model-grid">${state.models.map(installedCard).join('')}</div>`
+        : `<div class="card empty-inline">
+            <span class="empty-icon sm">${icon('boxes', 22)}</span>
+            <div><strong>${t('No models on disk yet')}</strong><p>${t('Download a model to start creating.')}</p></div>
+          </div>`
+    }
+
+    <div class="section-header">
+      <h2>${icon('cloud-download', 16)} ${t('Download models')}</h2>
+      <p>${esc(state.catalogStatus || t('Models download from Hugging Face straight to your computer.'))}</p>
+    </div>
+    <div class="model-grid">${state.catalog.map((model, i) => catalogCard(model, i)).join('')}</div>
 
     <section class="card custom-card">
       <div class="card-head compact">
@@ -902,29 +1172,33 @@ function models() {
       <p class="muted-note">${t('Enter a Diffusers-compatible repository id. Gated models need approval and an HF_TOKEN environment variable.')}</p>
       <div class="custom-row">
         <input id="custom-model" placeholder="username/model-name" dir="ltr" />
-        <button class="btn btn-primary" data-action="download-custom" ${busy ? 'disabled' : ''}>${icon('download', 15)} ${t('Download model')}</button>
+        <button class="btn btn-primary" data-action="download-custom" ${state.task ? 'disabled' : ''}>${icon('download', 15)} ${t('Download model')}</button>
       </div>
     </section>
 
-    ${state.pythonError ? `<div class="alert">${icon('circle-alert', 15)}<div><strong>${t('Python worker')}</strong><p>${esc(state.pythonError)}</p><button class="link-btn" data-action="copy-command">${icon('copy', 13)} ${t('Copy command')}</button></div></div>` : ''}
-
     ${
-      state.job
+      state.task
         ? `<section class="card job-card">
             <div class="card-head compact">
-              <span class="card-icon">${icon(state.job === 'download' ? 'cloud-download' : 'wand-sparkles', 17)}</span>
-              <div class="card-titles"><h2>${state.job === 'download' ? t('Downloading') : t('Working…')}</h2><p data-live-detail>${esc(downloadDetail())}</p></div>
+              <span class="card-icon">${icon(state.task.kind === 'download' ? 'cloud-download' : state.task.kind === 'load' ? 'power' : 'wand-sparkles', 17)}</span>
+              <div class="card-titles"><h2>${esc(taskLabel())}</h2><p data-live-detail>${esc(taskDetail())}</p></div>
               <b class="job-pct" data-live-percent>${Math.round(state.progress)}%</b>
             </div>
             <div class="progress"><span data-live-progress style="width:${Math.min(100, Math.max(0, state.progress))}%"></span></div>
-            <div class="job-foot"><span class="dot busy"></span><span data-live-status>${esc(statusLabel())}</span><span data-live-elapsed>${formatDuration(state.elapsed)}</span></div>
+            <div class="job-foot">
+              <span class="dot busy"></span><span data-live-status>${esc(statusLabel())}</span>
+              <span data-live-elapsed>${formatDuration(state.elapsed)}</span>
+              <button class="link-btn" data-action="cancel">${icon('square', 12)} ${t('Stop')}</button>
+            </div>
           </section>`
         : ''
     }
+    ${pythonAlert()}
   </div>`;
 }
 
 function settings() {
+  const diagnostics = state.diagnostics;
   return `
   <div class="page">
     <section class="page-head">
@@ -977,6 +1251,42 @@ function settings() {
 
       <section class="card setting-card">
         <div class="card-head compact">
+          <span class="card-icon">${icon('power', 17)}</span>
+          <div class="card-titles"><h2>${t('Python worker')}</h2><p>${state.workerReady ? `PID ${state.workerInfo?.pid || '—'} · Python ${state.workerInfo?.python || '—'}` : t('Waiting for the worker…')}</p></div>
+        </div>
+        <div class="setting-row">
+          <div><strong>${t('Worker')}</strong><small>${state.workerReady ? `Python ${state.workerInfo?.python || ''} · ${esc(state.workerInfo?.platform || '')}` : esc(state.workerError || t('Waiting for the worker…'))}</small></div>
+          <button class="btn btn-ghost" data-action="restart-worker">${icon('refresh-cw', 14)} ${t('Restart worker')}</button>
+        </div>
+        <div class="setting-row">
+          <div><strong>${t('Environment check')}</strong><small>${t('Runs inference locally with Python and Diffusers.')}</small></div>
+          <button class="btn btn-ghost" data-action="diagnose" ${state.workerReady ? '' : 'disabled'}>${icon('gauge', 14)} ${t('Run check')}</button>
+        </div>
+        ${
+          diagnostics
+            ? `<div class="diagnostics">
+                ${Object.entries(diagnostics)
+                  .filter(([key]) => !['event'].includes(key))
+                  .map(([key, value]) => {
+                    let text = value;
+                    if (key === 'free_space' || key === 'total_space') text = formatBytes(value);
+                    if (typeof value === 'boolean') text = value ? 'yes' : 'no';
+                    const bad = typeof value === 'string' && (value.startsWith('missing') || value.startsWith('unreachable'));
+                    return `<div class="diag-row ${bad ? 'bad' : ''}"><span>${esc(key)}</span><b class="mono">${esc(text)}</b></div>`;
+                  })
+                  .join('')}
+              </div>`
+            : ''
+        }
+        <div class="python-help">
+          <strong>${t('Install the worker dependencies once:')}</strong>
+          <code dir="ltr">python3 -m pip install -r scripts/requirements.txt</code>
+          <button class="link-btn" data-action="copy-command">${icon('copy', 13)} ${t('Copy command')}</button>
+        </div>
+      </section>
+
+      <section class="card setting-card">
+        <div class="card-head compact">
           <span class="card-icon">${icon('palette', 17)}</span>
           <div class="card-titles"><h2>${t('Appearance')}</h2><p>${t('Switch look and language.')}</p></div>
         </div>
@@ -1004,11 +1314,6 @@ function settings() {
         <div class="setting-row">
           <div><strong>${t('Check for updates')}</strong><small>${esc(state.update || t('Runs inference locally with Python and Diffusers.'))}</small></div>
           <button class="btn btn-ghost" data-action="update">${t('Check for updates')}</button>
-        </div>
-        <div class="python-help">
-          <strong>${t('Install the worker dependencies once:')}</strong>
-          <code dir="ltr">python3 -m pip install -r scripts/requirements.txt</code>
-          <button class="link-btn" data-action="copy-command">${icon('copy', 13)} ${t('Copy command')}</button>
         </div>
       </section>
     </div>
@@ -1054,47 +1359,50 @@ function render() {
       }
     }
   }
+  paintLive();
 }
 
 /* ------------------------------------------------------------------ *
- * Live (non-re-rendering) updates
+ * Live updates
  * ------------------------------------------------------------------ */
 
-function downloadSpeed() {
-  const speed = state.downloading?.speed || 0;
-  return speed > 0 ? `${formatBytes(speed)}/s` : '—';
+function taskDetail() {
+  if (!state.task) return '';
+  if (state.task.kind === 'download') {
+    const parts = [];
+    if (state.task.file) parts.push(state.task.index ? `${state.task.index}/${state.task.count} · ${state.task.file}` : state.task.file);
+    if (state.task.total) parts.push(`${formatBytes(state.task.current)} / ${formatBytes(state.task.total)}`);
+    if (state.task.speed) parts.push(`${formatBytes(state.task.speed)}/s`);
+    return parts.join('  ·  ');
+  }
+  if (state.task.kind === 'load') return state.loaded ? '' : t('Loading model…');
+  return state.task.steps ? `${t('Steps')} ${state.task.step || 0} / ${state.task.steps}` : '';
 }
 
-function downloadDetail() {
-  if (state.job !== 'download' || !state.downloading) return '';
-  const { file, bytes, total, speed } = state.downloading;
-  const parts = [];
-  if (file) parts.push(file);
-  if (total) parts.push(`${formatBytes(bytes)} / ${formatBytes(total)}`);
-  if (speed) parts.push(`${formatBytes(speed)}/s`);
-  return parts.join('  ·  ');
+function taskSpeed() {
+  return state.task?.speed ? `${formatBytes(state.task.speed)}/s` : '—';
 }
 
 function paintLive() {
   const percent = Math.min(100, Math.max(0, state.progress));
-  document.querySelectorAll('[data-live-progress]').forEach((el) => (el.style.width = `${percent}%`));
-  document.querySelectorAll('[data-live-progress2]').forEach((el) => (el.style.width = `${percent}%`));
-  document.querySelectorAll('[data-live-progress4]').forEach((el) => (el.style.width = `${percent}%`));
-  document.querySelectorAll('[data-live-percent], [data-live-percent2], [data-live-percent3], [data-live-percent4]').forEach((el) => {
-    el.textContent = `${Math.round(percent)}%`;
-  });
+  for (const selector of ['[data-live-progress]', '[data-live-progress2]', '[data-live-progress3]', '[data-live-progress4]']) {
+    document.querySelectorAll(selector).forEach((el) => (el.style.width = `${percent}%`));
+  }
+  document
+    .querySelectorAll('[data-live-percent], [data-live-percent2], [data-live-percent3], [data-live-percent4]')
+    .forEach((el) => (el.textContent = `${Math.round(percent)}%`));
   document.querySelectorAll('[data-live-status], [data-live-status2]').forEach((el) => (el.textContent = statusLabel()));
-  document.querySelectorAll('[data-live-detail]').forEach((el) => (el.textContent = downloadDetail()));
+  document.querySelectorAll('[data-live-detail]').forEach((el) => (el.textContent = taskDetail()));
   document.querySelectorAll('[data-live-elapsed]').forEach((el) => (el.textContent = formatDuration(state.elapsed)));
 }
 
 let elapsedTimer = null;
 function startTimer() {
   stopTimer();
-  state.jobStartedAt = Date.now();
+  state.startedAt = Date.now();
   state.elapsed = 0;
   elapsedTimer = setInterval(() => {
-    state.elapsed = (Date.now() - state.jobStartedAt) / 1000;
+    state.elapsed = (Date.now() - state.startedAt) / 1000;
     document.querySelectorAll('[data-live-elapsed]').forEach((el) => (el.textContent = formatDuration(state.elapsed)));
   }, 1000);
 }
@@ -1104,26 +1412,26 @@ function stopTimer() {
 }
 
 /* ------------------------------------------------------------------ *
- * Data & worker actions
+ * Data
  * ------------------------------------------------------------------ */
 
 function sync() {
-  const readValue = (id) => document.getElementById(id);
-  const prompt = readValue('prompt');
+  const byId = (id) => document.getElementById(id);
+  const prompt = byId('prompt');
   if (prompt) state.prompt = prompt.value;
-  const negative = readValue('negative');
+  const negative = byId('negative');
   if (negative) state.negative = negative.value;
-  const count = readValue('count');
+  const count = byId('count');
   if (count) state.count = Number(count.value);
-  const steps = readValue('steps');
+  const steps = byId('steps');
   if (steps) state.steps = Number(steps.value);
-  const guidance = readValue('guidance');
+  const guidance = byId('guidance');
   if (guidance) state.guidance = Number(guidance.value);
-  const seed = readValue('seed');
+  const seed = byId('seed');
   if (seed) state.seed = Number(seed.value);
-  const size = readValue('size');
+  const size = byId('size');
   if (size) [state.width, state.height] = size.value.split('x').map(Number);
-  const device = readValue('device');
+  const device = byId('device');
   if (device) state.device = device.value;
 }
 
@@ -1138,13 +1446,22 @@ async function resolvePaths() {
   }
 }
 
-async function refreshInstalled() {
-  if (!isTauri || !state.modelsDir) return;
+async function refreshModels() {
+  if (!isTauri) return;
   try {
-    const ids = await invoke('installed_models', { path: state.modelsDir });
-    if (Array.isArray(ids)) {
-      state.installed = Object.fromEntries(ids.map((id) => [id, true]));
-      write('dc.downloaded', state.installed);
+    const list = await invoke('installed_models', { path: state.modelsDir });
+    if (!Array.isArray(list)) return;
+    state.models = list.map((item) => ({
+      id: String(item.id),
+      name: String(item.name || item.id),
+      path: String(item.path),
+      size: Number(item.size) || 0,
+      files: Number(item.files) || 0,
+      ready: !!item.ready,
+    }));
+    if (state.models.length && !state.models.some((model) => model.id === state.model)) {
+      state.model = state.models[0].id;
+      write('dc.model', state.model);
     }
   } catch (error) {
     console.warn('installed_models failed', error);
@@ -1180,50 +1497,13 @@ async function appendImage(path) {
   try {
     const bytes = await invoke('image_data', { path, output: state.output });
     const name = path.split(/[\\/]/).pop();
-    state.images
-      .filter((image) => image.path === path)
-      .forEach((image) => URL.revokeObjectURL(image.url));
+    state.images.filter((image) => image.path === path).forEach((image) => URL.revokeObjectURL(image.url));
     state.images = [
       { path, name, url: URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'image/png' })) },
       ...state.images.filter((image) => image.path !== path),
     ];
   } catch (error) {
     console.warn('appendImage failed', error);
-  }
-}
-
-async function runWorker(action, args) {
-  if (!isTauri) {
-    showToast(t('This action runs in the desktop app.'), 'warn');
-    return false;
-  }
-  state.workerErrorAt = 0;
-  const seenAt = 0;
-  try {
-    const result = await invoke('run_worker', { action, args });
-    state.pythonError = '';
-    return result !== false;
-  } catch (error) {
-    const message = String(error || '').trim();
-    const alreadyReported = Date.now() - (state.workerErrorAt || 0) < 5000 && state.workerErrorAt > seenAt;
-    state.status = message || t('Generation failed');
-    if (/python|module|not found|No module|command|pip/i.test(message)) {
-      state.pythonError = message;
-    }
-    if (alreadyReported) {
-      console.warn(message);
-    } else if (/worker failed|worker stopped unexpectedly|could not start python/i.test(message)) {
-      // The Python side usually reports a friendlier message as a worker event;
-      // show the raw wrapper only if that event never arrives.
-      const withError = state.workerErrorAt;
-      setTimeout(() => {
-        if (state.workerErrorAt === withError) showToast(message, 'err');
-      }, 900);
-    } else {
-      showToast(message || t('Generation failed'), 'err');
-    }
-    render();
-    return false;
   }
 }
 
@@ -1249,27 +1529,49 @@ async function generate() {
     showToast(t('This action runs in the desktop app.'), 'warn');
     return;
   }
-  if (!state.installed[state.model]) {
+  if (state.task) {
+    showToast(t('Please wait for the current task to finish.'), 'warn');
+    return;
+  }
+  if (!state.models.length) {
+    showToast(t('Download a model to start creating.'), 'warn');
+    go('models');
+    return;
+  }
+  const current = modelById(state.model);
+  if (!current) {
     showToast(t('Download the selected model first.'), 'warn');
     go('models');
     return;
   }
+  if (!current.ready) {
+    showToast(t('Model files are missing.'), 'err');
+    return;
+  }
+
   state.count = clamp(state.count, 1, 50, 1);
   state.steps = clamp(state.steps, 1, 150, 30);
   state.guidance = clamp(state.guidance, 0, 30, 7.5);
   if (!state.output) await resolvePaths();
 
-  state.job = 'generate';
+  const needsLoad = state.loaded?.model !== state.model;
+  state.task = {
+    kind: 'generate',
+    phase: needsLoad ? 'load' : 'generate',
+    model: state.model,
+    status: needsLoad ? t('Loading model…') : t('Starting generation…'),
+    progress: 0,
+  };
   state.progress = 0;
-  state.status = t('Starting generation…');
-  state.pythonError = '';
+  state.status = state.task.status;
   startTimer();
   render();
 
-  const ok = await runWorker('generate', {
+  const sent = await sendWorker('generate', {
     prompt: state.prompt,
     negative: state.negative,
-    model_path: joinPath(state.modelsDir, folderName(state.model)),
+    model: state.model,
+    model_path: modelPath(state.model),
     output: state.output,
     device: state.device,
     count: state.count,
@@ -1279,16 +1581,11 @@ async function generate() {
     height: state.height,
     seed: state.seed,
   });
-
-  stopTimer();
-  state.job = null;
-  state.progress = ok ? 100 : 0;
-  state.status = ok ? t('Generation complete') : state.status || t('Generation failed');
-  if (ok) {
-    await loadImages();
-    showToast(t('Generation complete'), 'ok');
+  if (!sent) {
+    stopTimer();
+    state.task = null;
+    render();
   }
-  render();
 }
 
 async function downloadModel(id) {
@@ -1301,7 +1598,7 @@ async function downloadModel(id) {
     showToast(t('Model downloads run in the desktop app.'), 'warn');
     return;
   }
-  if (state.job) {
+  if (state.task) {
     showToast(t('Please wait for the current task to finish.'), 'warn');
     return;
   }
@@ -1312,34 +1609,81 @@ async function downloadModel(id) {
     return;
   }
 
-  state.job = 'download';
+  state.task = { kind: 'download', model: modelId, status: t('Connecting to Hugging Face…'), progress: 0, file: '', index: 0, count: 0 };
   state.progress = 0;
-  state.downloading = { id: modelId, percent: 0, bytes: 0, total: 0, speed: 0, file: '', name: modelId };
-  state.status = t('Connecting to Hugging Face…');
+  state.status = state.task.status;
   state.pythonError = '';
   startTimer();
   render();
 
-  const ok = await runWorker('download', {
-    model: modelId,
-    path: joinPath(state.modelsDir, folderName(modelId)),
-  });
+  const sent = await sendWorker('download', { model: modelId, path: modelPath(modelId) });
+  if (!sent) {
+    stopTimer();
+    state.task = null;
+    render();
+  }
+}
 
-  stopTimer();
-  state.job = null;
-  state.downloading = null;
+async function loadModel(id) {
+  if (!isTauri) {
+    showToast(t('This action runs in the desktop app.'), 'warn');
+    return;
+  }
+  if (state.task) {
+    showToast(t('Please wait for the current task to finish.'), 'warn');
+    return;
+  }
+  if (!id) return;
+  state.model = id;
+  write('dc.model', id);
+  state.task = { kind: 'load', model: id, status: t('Loading model…'), progress: 0 };
+  state.status = t('Loading model…');
   state.progress = 0;
+  startTimer();
+  render();
+  const sent = await sendWorker('load', { model: id, model_path: modelPath(id), device: state.device });
+  if (!sent) {
+    stopTimer();
+    state.task = null;
+    render();
+  }
+}
 
-  if (ok) {
-    state.installed[modelId] = true;
-    state.model = modelId;
-    write('dc.model', modelId);
-    write('dc.downloaded', state.installed);
-    await refreshInstalled();
-    state.status = t('Model downloaded and ready');
-    showToast(t('Model ready to use'), 'ok');
-  } else {
-    state.status = t('Download failed');
+function unloadModel() {
+  return new Promise((resolve) => {
+    if (!isTauri) return resolve();
+    if (!state.loaded) return resolve();
+    state.pendingUnload = resolve;
+    sendWorker('unload');
+    setTimeout(() => {
+      if (state.pendingUnload === resolve) {
+        state.pendingUnload = null;
+        resolve();
+      }
+    }, 3000);
+  });
+}
+
+async function deleteModel(id) {
+  const model = modelById(id);
+  if (!model) return;
+  if (state.task) {
+    showToast(t('Please wait for the current task to finish.'), 'warn');
+    return;
+  }
+  const ok = await confirmDialog({
+    title: t('Delete model?'),
+    body: `${model.id} · ${formatBytes(model.size)} — ${t('This deletes the downloaded files from disk.')}`,
+    confirmLabel: t('Delete'),
+  });
+  if (!ok) return;
+  try {
+    if (state.loaded?.model === model.id) await unloadModel();
+    await invoke('delete_model', { modelsDir: state.modelsDir, path: model.path });
+    await refreshModels();
+    showToast(t('Model deleted'), 'ok');
+  } catch (error) {
+    showToast(String(error || ''), 'err');
   }
   render();
 }
@@ -1374,8 +1718,7 @@ async function revealImage(image) {
   if (!image || !isTauri) return;
   try {
     await revealItemInDir(image.path);
-  } catch (error) {
-    console.warn('reveal failed', error);
+  } catch {
     await openOutput();
   }
 }
@@ -1390,6 +1733,16 @@ async function openOutput() {
     } catch {
       showToast(String(error || t('Open folder')), 'err');
     }
+  }
+}
+
+async function openModelFolder(id) {
+  const model = modelById(id);
+  if (!model) return;
+  try {
+    await openPath(model.path);
+  } catch (error) {
+    showToast(String(error || t('Open folder')), 'err');
   }
 }
 
@@ -1425,7 +1778,10 @@ async function chooseFolder(key) {
     if (!value) return;
     state[key] = value;
     write(key === 'modelsDir' ? 'dc.modelsDir' : 'dc.output', value);
-    if (key === 'modelsDir') await refreshInstalled();
+    if (key === 'modelsDir') {
+      if (state.loaded) await unloadModel();
+      await refreshModels();
+    }
     if (key === 'output') await loadImages();
     render();
   } catch (error) {
@@ -1502,16 +1858,7 @@ async function checkUpdate() {
   render();
 }
 
-async function recheckHardware() {
-  state.hardware = t('Detecting hardware…');
-  render();
-  const ok = await runWorker('hardware', {});
-  if (!ok) state.hardware = t('CPU detected');
-  render();
-}
-
 function randomPrompt() {
-  sync();
   const pick = SAMPLES[Math.floor(Math.random() * SAMPLES.length)];
   state.prompt = state.lang === 'fa' ? pick.fa : pick.en;
   render();
@@ -1522,7 +1869,6 @@ function go(page) {
   sync();
   state.page = page;
   render();
-  document.querySelector('.content')?.scrollTo?.({ top: 0 });
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -1533,11 +1879,191 @@ function setTheme(theme) {
 }
 
 function setLang(lang) {
-  state.lang = lang;
-  write('dc.lang', lang);
   const prompt = document.getElementById('prompt');
   if (prompt) state.prompt = prompt.value;
+  state.lang = lang;
+  write('dc.lang', lang);
   render();
+}
+
+/* ------------------------------------------------------------------ *
+ * Worker events
+ * ------------------------------------------------------------------ */
+
+function clearTask() {
+  if (state.task) stopTimer();
+  state.task = null;
+  state.progress = 0;
+  state.status = '';
+}
+
+function onWorkerEvent(event) {
+  const payload = event.payload || {};
+  switch (payload.event) {
+    case 'ready': {
+      state.workerReady = true;
+      state.workerStarting = false;
+      state.workerInfo = payload;
+      state.workerError = '';
+      state.pythonError = '';
+      sendWorker('hardware');
+      render();
+      break;
+    }
+    case 'worker-exit': {
+      const wasReady = state.workerReady;
+      state.workerReady = false;
+      state.loaded = null;
+      clearTask();
+      if (wasReady) showToast(t('Worker stopped unexpectedly.'), 'warn');
+      render();
+      break;
+    }
+    case 'worker-log':
+      console.warn('[worker]', payload.message);
+      break;
+    case 'hardware': {
+      state.hardware = payload.cuda && payload.gpu ? payload.gpu : payload.mps ? t('Apple GPU detected') : t('CPU detected');
+      render();
+      break;
+    }
+    case 'diagnose': {
+      state.diagnostics = payload;
+      if (state.page === 'settings') render();
+      showToast(t('Environment check'), 'ok');
+      break;
+    }
+    case 'task-start':
+      break;
+    case 'load-start': {
+      if (!state.task || state.task.kind === 'generate') {
+        state.task = { kind: 'load', model: payload.model, status: t('Loading model…'), progress: 0 };
+        state.status = t('Loading model…');
+        state.progress = 0;
+        startTimer();
+      } else {
+        state.status = t('Loading model…');
+      }
+      render();
+      break;
+    }
+    case 'loaded': {
+      state.loaded = payload;
+      clearTask();
+      showToast(`${t('Model loaded')} · ${String(payload.device || '').toUpperCase()} · ${payload.seconds || 0}s`, 'ok');
+      render();
+      break;
+    }
+    case 'unloaded': {
+      state.loaded = null;
+      const resolve = state.pendingUnload;
+      state.pendingUnload = null;
+      if (resolve) resolve();
+      showToast(t('Model unloaded'), 'ok');
+      render();
+      break;
+    }
+    case 'download-plan': {
+      if (state.task) {
+        state.task.count = Number(payload.files) || 0;
+        state.task.total = Number(payload.total) || 0;
+      }
+      paintLive();
+      break;
+    }
+    case 'download-file': {
+      if (state.task) {
+        state.task.file = payload.file;
+        state.task.index = Number(payload.index) || 0;
+        state.task.count = Number(payload.count) || state.task.count;
+      }
+      paintLive();
+      break;
+    }
+    case 'download': {
+      if (state.task) {
+        state.task.current = Number(payload.current) || 0;
+        state.task.total = Number(payload.total) || state.task.total;
+        state.task.speed = Number(payload.speed) || 0;
+        state.task.file = payload.file || state.task.file;
+        state.progress = state.task.total ? (state.task.current / state.task.total) * 100 : state.progress;
+      }
+      paintLive();
+      break;
+    }
+    case 'downloaded': {
+      const modelId = payload.model;
+      clearTask();
+      if (modelId) {
+        state.model = modelId;
+        write('dc.model', modelId);
+      }
+      refreshModels().then(() => render());
+      showToast(`${t('Download complete')} · ${formatBytes(payload.size)}`, 'ok');
+      if (payload.ready === false) showToast(t('Model files are missing.'), 'warn');
+      render();
+      break;
+    }
+    case 'generation': {
+      if (state.task) {
+        state.task.phase = 'generate';
+        state.task.step = Number(payload.step) || 0;
+        state.task.steps = Number(payload.steps) || state.task.steps;
+        state.task.index = Number(payload.current) || 0;
+        state.task.count = Number(payload.count) || state.task.count;
+        const steps = state.task.steps || state.steps;
+        state.progress = Math.min(99, ((state.task.index + (state.task.step || 0) / Math.max(1, steps)) / Math.max(1, state.task.count)) * 100);
+      }
+      paintLive();
+      break;
+    }
+    case 'image': {
+      if (payload.path) {
+        const name = String(payload.path).split(/[\\/]/).pop();
+        rememberMeta(name, { prompt: payload.prompt || state.prompt, seed: payload.seed, model: payload.model || state.model });
+        appendImage(payload.path).then(() => render());
+      }
+      break;
+    }
+    case 'done': {
+      if (payload.task === 'generate') {
+        clearTask();
+        state.status = t('Generation complete');
+        loadImages().then(() => render());
+        showToast(`${t('Generation complete')}${payload.seconds ? ` · ${payload.seconds}s` : ''}`, 'ok');
+        render();
+      }
+      break;
+    }
+    case 'cancelled': {
+      clearTask();
+      state.status = t('Cancelled');
+      showToast(t('Cancelled'), 'warn');
+      render();
+      break;
+    }
+    case 'error': {
+      state.pythonError = payload.message || '';
+      clearTask();
+      showToast(payload.message || t('Generation failed'), 'err');
+      render();
+      break;
+    }
+    case 'cancel-requested': {
+      if (state.task) {
+        state.status = t('Cancelling…');
+        paintLive();
+      }
+      break;
+    }
+    case 'status': {
+      state.status = payload.message || state.status;
+      paintLive();
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1558,12 +2084,26 @@ const COMMANDS = {
   update: checkUpdate,
   recheck: recheckHardware,
   'refresh-catalog': refreshCatalog,
+  'refresh-models': () => refreshModels().then(render),
   'choose-models': () => chooseFolder('modelsDir'),
   'choose-output': () => chooseFolder('output'),
   'open-output': openOutput,
   'copy-prompt': () => (state.images[0] ? copyText(state.meta[state.images[0].name]?.prompt || state.images[0].name, t('Prompt copied')) : null),
   'copy-command': () => copyText('python3 -m pip install -r scripts/requirements.txt', t('Command copied')),
   'download-custom': () => downloadModel(document.getElementById('custom-model')?.value || ''),
+  'unload-model': () => {
+    unloadModel();
+    render();
+  },
+  cancel: () => {
+    if (state.task) {
+      state.status = t('Cancelling…');
+      paintLive();
+    }
+    sendWorker('cancel');
+  },
+  'restart-worker': () => startWorker(),
+  diagnose: () => sendWorker('diagnose', { models_dir: state.modelsDir }),
 };
 
 function onClick(event) {
@@ -1589,6 +2129,9 @@ function onClick(event) {
     document.getElementById('prompt')?.focus();
   }
   if (action === 'download-model') downloadModel(value);
+  if (action === 'load-model') loadModel(value);
+  if (action === 'delete-model') deleteModel(value);
+  if (action === 'open-model') openModelFolder(value);
   if (action === 'use-model') {
     state.model = value;
     write('dc.model', value);
@@ -1628,71 +2171,31 @@ function onInput(event) {
   if (el.id === 'device' && el.value !== state.device) {
     state.device = el.value;
     write('dc.device', el.value);
+    if (state.loaded) showToast(t('Reload to apply the new device.'), 'warn');
   }
 }
 
+function recheckHardware() {
+  if (!state.workerReady) {
+    startWorker();
+    return;
+  }
+  sendWorker('hardware');
+}
+
 function onKeydown(event) {
-  if (event.key === 'Escape') closeLightbox();
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && state.page === 'studio') {
+  if (event.key === 'Escape') {
+    closeLightbox();
+    closeDialog();
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && state.page === 'studio' && !state.task) {
     event.preventDefault();
-    if (!state.job) generate();
+    generate();
   }
   const lightbox = document.getElementById('lightbox');
   if (lightbox && state.images.length > 1) {
     if (event.key === 'ArrowLeft') stepLightbox(state.lang === 'fa' ? 1 : -1);
     if (event.key === 'ArrowRight') stepLightbox(state.lang === 'fa' ? -1 : 1);
-  }
-}
-
-function onWorkerEvent(event) {
-  const payload = event.payload || {};
-  if (payload.event === 'hardware') {
-    state.hardware = payload.cuda && payload.gpu ? payload.gpu : payload.mps ? t('Apple GPU detected') : t('CPU detected');
-    render();
-  }
-  if (payload.event === 'status') {
-    state.status = payload.message || state.status;
-    paintLive();
-  }
-  if (payload.event === 'error') {
-    state.status = payload.message || 'Worker error';
-    state.pythonError = payload.message || '';
-    state.workerErrorAt = Date.now();
-    showToast(payload.message || 'Worker error', 'err');
-    paintLive();
-  }
-  if (payload.event === 'download') {
-    const current = Number(payload.current) || 0;
-    const total = Number(payload.total) || 0;
-    state.downloading = {
-      ...(state.downloading || {}),
-      file: payload.name ? String(payload.name).split(/[\\/]/).pop() : state.downloading?.file,
-      bytes: current,
-      total,
-      speed: Number(payload.speed) || 0,
-    };
-    state.progress = total ? (current / total) * 100 : state.progress;
-    paintLive();
-  }
-  if (payload.event === 'generation') {
-    const current = Number(payload.current) || 0;
-    const count = Number(payload.count) || 1;
-    const step = Number(payload.step) || 0;
-    const steps = Number(payload.steps) || state.steps;
-    state.progress = Math.min(99, ((current + step / Math.max(1, steps)) / count) * 100);
-    state.status = `${t('Images')} ${current + 1} / ${count} · ${t('Steps')} ${step} / ${steps}`;
-    paintLive();
-  }
-  if (payload.event === 'image') {
-    if (payload.path) {
-      const name = String(payload.path).split(/[\\/]/).pop();
-      rememberMeta(name, { prompt: state.prompt, seed: payload.seed, model: state.model });
-      appendImage(payload.path).then(() => render());
-    }
-  }
-  if (payload.event === 'complete') {
-    state.progress = 100;
-    paintLive();
   }
 }
 
@@ -1707,21 +2210,20 @@ async function boot() {
   document.addEventListener('keydown', onKeydown);
 
   state.catalogStatus = t('Loading model catalogue…');
+  state.status = t('Starting the Python worker…');
   render();
 
   if (isTauri) {
-    await listen('worker-event', onWorkerEvent).catch(() => {});
-    await resolvePaths();
-    await refreshInstalled();
-    await loadImages();
-    state.hardware = t('Detecting hardware…');
-    render();
     try {
-      await invoke('run_worker', { action: 'hardware', args: {} });
-    } catch {
-      state.hardware = t('Python worker');
-      render();
+      await listen('worker-event', onWorkerEvent);
+    } catch (error) {
+      console.warn('listen failed', error);
     }
+    await resolvePaths();
+    await refreshModels();
+    await loadImages();
+    render();
+    startWorker({ quiet: true });
   } else {
     state.hardware = t('Browser preview');
     render();

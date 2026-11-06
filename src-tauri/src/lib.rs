@@ -1,14 +1,38 @@
 use serde_json::{json, Value};
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{Arc, Mutex},
-    time::Duration,
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::Mutex,
 };
 use tauri::{Emitter, Manager};
 
-/// Locate the bundled worker script, falling back to the repository copy in dev.
+/// Keep one Python process alive so a loaded Diffusers pipeline survives between
+/// commands. Starting a fresh interpreter per image used to reload gigabytes.
+#[derive(Default)]
+struct WorkerProc {
+    child: Mutex<Option<Child>>,
+    stdin: Mutex<Option<ChildStdin>>,
+}
+
+impl WorkerProc {
+    fn shutdown(&self) {
+        if let Ok(mut stdin) = self.stdin.lock() {
+            *stdin = None;
+        }
+        if let Ok(mut slot) = self.child.lock() {
+            if let Some(mut child) = slot.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+fn python_binary() -> String {
+    std::env::var("DREAMCANVAS_PYTHON").unwrap_or_else(|_| if cfg!(windows) { "python".into() } else { "python3".into() })
+}
+
 fn worker_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Ok(resources) = app.path().resource_dir() {
         let bundled = resources.join("worker.py");
@@ -34,81 +58,104 @@ fn tail(text: &str, limit: usize) -> String {
     trimmed.chars().skip(trimmed.chars().count() - limit).collect()
 }
 
+/// Start (or restart) the Python worker and stream its events to the interface.
 #[tauri::command]
-async fn run_worker(app: tauri::AppHandle, action: String, args: Value) -> Result<(), String> {
-    if !matches!(action.as_str(), "hardware" | "download" | "generate") {
-        return Err("Invalid action".into());
-    }
+fn worker_start(app: tauri::AppHandle, state: tauri::State<'_, WorkerProc>) -> Result<(), String> {
+    state.shutdown();
+
     let script = worker_path(&app)?;
+    let python = python_binary();
+    let mut command = Command::new(&python);
+    command
+        .arg(&script)
+        .arg("serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let python = std::env::var("DREAMCANVAS_PYTHON")
-            .unwrap_or_else(|_| if cfg!(windows) { "python".into() } else { "python3".into() });
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
 
-        let mut command = Command::new(&python);
-        command
-            .arg(&script)
-            .arg(&action)
-            .arg(args.to_string())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Could not start Python ({python}): {error}. Install Python 3.10+ and run `python3 -m pip install -r scripts/requirements.txt`, or set DREAMCANVAS_PYTHON to the full path of your interpreter."
+        )
+    })?;
 
-        // Hide the worker console without changing its stdout event stream.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
+    let stdin = child.stdin.take().ok_or("Could not open the worker's input stream")?;
+    let stdout = child.stdout.take().ok_or("Could not open the worker's output stream")?;
 
-        let mut child = command.spawn().map_err(|error| {
-            format!("Could not start Python ({python}): {error}. Install Python 3.10+ and run `python3 -m pip install -r scripts/requirements.txt`, or set DREAMCANVAS_PYTHON to the full path of your interpreter.")
-        })?;
+    // Keep Python's diagnostics for error reporting instead of dropping them.
+    if let Some(mut stderr) = child.stderr.take() {
+        let app_errors = app.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut text = String::new();
+            let _ = stderr.read_to_string(&mut text);
+            if !text.trim().is_empty() {
+                let _ = app_errors.emit("worker-event", json!({"event": "worker-log", "message": tail(&text, 1500)}));
+            }
+        });
+    }
 
-        // Drain stderr on a thread so a noisy library can never fill the pipe and
-        // deadlock the worker, while keeping the last lines for error messages.
-        let stderr_buffer = Arc::new(Mutex::new(String::new()));
-        if let Some(mut stream) = child.stderr.take() {
-            let buffer = Arc::clone(&stderr_buffer);
-            std::thread::spawn(move || {
-                let mut text = String::new();
-                let _ = stream.read_to_string(&mut text);
-                if let Ok(mut guard) = buffer.lock() {
-                    guard.push_str(&text);
-                }
-            });
-        }
-
-        if let Some(stdout) = child.stdout.take() {
-            for line in BufReader::new(stdout).lines().flatten() {
-                if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                    let _ = app.emit("worker-event", event);
+    {
+        let app_reader = app.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        match serde_json::from_str::<Value>(trimmed) {
+                            Ok(event) => {
+                                let _ = app_reader.emit("worker-event", event);
+                            }
+                            Err(_) => {
+                                let _ = app_reader.emit("worker-event", json!({"event": "worker-log", "message": tail(trimmed, 400)}));
+                            }
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
-        }
+            let _ = app_reader.emit("worker-event", json!({"event": "worker-exit"}));
+        });
+    }
 
-        let status = child.wait().map_err(|error| error.to_string())?;
-        if !status.success() {
-            // Give the stderr reader a moment to flush before reading it.
-            std::thread::sleep(Duration::from_millis(60));
-            let log = stderr_buffer
-                .lock()
-                .map(|guard| guard.clone())
-                .unwrap_or_default();
-            let detail = tail(&log, 700);
-            return Err(if detail.is_empty() {
-                "The worker stopped unexpectedly. Make sure the Python dependencies are installed (python3 -m pip install -r scripts/requirements.txt).".to_string()
-            } else {
-                format!("Worker failed: {detail}")
-            });
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    *state.stdin.lock().map_err(|_| "Worker state is poisoned".to_string())? = Some(stdin);
+    *state.child.lock().map_err(|_| "Worker state is poisoned".to_string())? = Some(child);
+    Ok(())
 }
 
-/// Default model output folders, created up front so downloads never fail on a
-/// missing directory.
+/// Forward one command to the worker's stdin.
+#[tauri::command]
+fn worker_send(state: tauri::State<'_, WorkerProc>, action: String, args: Value) -> Result<(), String> {
+    let mut guard = state.stdin.lock().map_err(|_| "Worker state is poisoned".to_string())?;
+    let stdin = guard
+        .as_mut()
+        .ok_or("The Python worker is not running. Use “Restart worker” in Settings.")?;
+    let payload = json!({ "action": action, "args": args });
+    writeln!(stdin, "{payload}").map_err(|error| error.to_string())?;
+    stdin.flush().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn worker_stop(state: tauri::State<'_, WorkerProc>) -> Result<(), String> {
+    state.shutdown();
+    Ok(())
+}
+
+/// Default folders, created up front so a download cannot fail on a missing path.
 #[tauri::command]
 fn default_paths(app: tauri::AppHandle) -> Result<Value, String> {
     let data = app.path().app_data_dir().map_err(|error| error.to_string())?;
@@ -123,7 +170,6 @@ fn default_paths(app: tauri::AppHandle) -> Result<Value, String> {
     }))
 }
 
-/// Folders created by DreamCanvas contain a manifest with the Hugging Face id.
 fn read_model_id(dir: &Path) -> Option<String> {
     let manifest = dir.join(".dreamcanvas-model.json");
     if let Ok(text) = std::fs::read_to_string(manifest) {
@@ -135,7 +181,6 @@ fn read_model_id(dir: &Path) -> Option<String> {
             }
         }
     }
-    // Fall back to models downloaded before manifests existed.
     if dir.join("model_index.json").exists() {
         if let Some(name) = dir.file_name().and_then(|name| name.to_str()) {
             return Some(name.replace("--", "/"));
@@ -144,23 +189,75 @@ fn read_model_id(dir: &Path) -> Option<String> {
     None
 }
 
+/// Bytes and file count of a model folder, ignoring the download cache.
+fn dir_stats(dir: &Path) -> (u64, u64) {
+    let mut size = 0u64;
+    let mut files = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let hidden = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name == ".cache")
+                    .unwrap_or(false);
+                if !hidden {
+                    stack.push(path);
+                }
+            } else if let Ok(meta) = entry.metadata() {
+                size += meta.len();
+                files += 1;
+            }
+        }
+    }
+    (size, files)
+}
+
 #[tauri::command]
-fn installed_models(path: String) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
+fn installed_models(path: String) -> Vec<Value> {
+    let mut items: Vec<Value> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&path) {
         for entry in entries.flatten() {
             let dir = entry.path();
             if !dir.is_dir() {
                 continue;
             }
-            if let Some(id) = read_model_id(&dir) {
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
-            }
+            let id = match read_model_id(&dir) {
+                Some(id) => id,
+                None => continue,
+            };
+            let (size, files) = dir_stats(&dir);
+            items.push(json!({
+                "id": id,
+                "name": id.split('/').last().unwrap_or(&id),
+                "path": dir.to_string_lossy(),
+                "size": size,
+                "files": files,
+                "ready": dir.join("model_index.json").exists(),
+            }));
         }
     }
-    ids
+    items.sort_by(|a, b| b["size"].as_u64().cmp(&a["size"].as_u64()));
+    items
+}
+
+#[tauri::command]
+fn delete_model(models_dir: String, path: String) -> Result<(), String> {
+    let root = std::fs::canonicalize(&models_dir).map_err(|error| error.to_string())?;
+    let target = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+    if !target.starts_with(&root) || target == root {
+        return Err("Refusing to delete a folder outside the model library.".into());
+    }
+    if !target.join("model_index.json").exists() && !target.join(".dreamcanvas-model.json").exists() {
+        return Err("That folder does not look like a DreamCanvas model.".into());
+    }
+    std::fs::remove_dir_all(&target).map_err(|error| error.to_string())
 }
 
 fn is_image(path: &Path) -> bool {
@@ -202,7 +299,6 @@ fn image_data(path: String, output: String) -> Result<Vec<u8>, String> {
     std::fs::read(file).map_err(|error| error.to_string())
 }
 
-/// Copy a generated image wherever the user picked in the save dialog.
 #[tauri::command]
 fn save_image(path: String, output: String, destination: String) -> Result<(), String> {
     let file = checked_image(&path, &output)?;
@@ -220,16 +316,26 @@ fn save_image(path: String, output: String, destination: String) -> Result<(), S
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(WorkerProc::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            run_worker,
+            worker_start,
+            worker_send,
+            worker_stop,
             default_paths,
             installed_models,
+            delete_model,
             list_images,
             image_data,
             save_image
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let state = window.app_handle().state::<WorkerProc>();
+                state.shutdown();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error running DreamCanvas");
 }
